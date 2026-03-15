@@ -40,6 +40,10 @@ make build
 ## Usage
 
 ```bash
+./radioplayer
+```
+
+```bash
 ./radioplayer <m3u8-file>
 ```
 

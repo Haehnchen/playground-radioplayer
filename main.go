@@ -8,18 +8,23 @@ package main
 import "C"
 import (
 	"bufio"
-	"crypto/sha256"
 	"embed"
+	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 	"unsafe"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
+	"fyne.io/fyne/v2/dialog"
+	"fyne.io/fyne/v2/storage"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 )
@@ -32,81 +37,134 @@ type Track struct {
 	URL  string
 }
 
+type Settings struct {
+	LastFile      string `json:"last_file"`
+	LastTrackURL  string `json:"last_track_url"`
+	Volume        int    `json:"volume"`
+}
+
+func getSettingsPath() string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", "radioplayer", "settings.json")
+}
+
+func loadSettings() Settings {
+	path := getSettingsPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Settings{Volume: 75}
+	}
+	var s Settings
+	if json.Unmarshal(data, &s) != nil {
+		return Settings{Volume: 75}
+	}
+	return s
+}
+
+func saveSettings(s Settings) {
+	path := getSettingsPath()
+	os.MkdirAll(filepath.Dir(path), 0755)
+	data, _ := json.MarshalIndent(s, "", "  ")
+	os.WriteFile(path, data, 0644)
+}
+
 type Player struct {
 	window        fyne.Window
 	playlist      []Track
 	filteredList  []Track
 	list          *widget.List
 	volume        *widget.Slider
-	volumeLabel   *widget.Label
 	currentTrack  *widget.Label
 	searchEntry   *widget.Entry
+	playStopBtn   *widget.Button
+	muteBtn       *widget.Button
 	instance      *C.libvlc_instance_t
 	mediaPlayer   *C.libvlc_media_player_t
 	media         *C.libvlc_media_t
 	playingIdx    int
+	settings      Settings
+	currentFile   string
+	isMuted       bool
+	savedVolume   int
 }
 
-func installDesktopEntry(iconData []byte) {
+func installDesktopEntry(iconData []byte) bool {
 	if runtime.GOOS != "linux" {
-		return
+		return false
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return
+		return false
 	}
 
-	iconDir := filepath.Join(home, ".local", "share", "icons", "hicolor", "256x256", "apps")
-	iconPath := filepath.Join(iconDir, "radioplayer.png")
+	// Remove ALL old radio player desktop entries
 	desktopDir := filepath.Join(home, ".local", "share", "applications")
-	desktopPath := filepath.Join(desktopDir, "radioplayer.desktop")
+	oldEntries, _ := filepath.Glob(filepath.Join(desktopDir, "*radio*.desktop"))
+	for _, e := range oldEntries {
+		os.Remove(e)
+	}
 
+	// Remove old icons
+	oldIcons, _ := filepath.Glob(filepath.Join(home, ".local", "share", "pixmaps", "*radio*.png"))
+	for _, i := range oldIcons {
+		os.Remove(i)
+	}
+	oldIcons2, _ := filepath.Glob(filepath.Join(home, ".local", "share", "icons", "hicolor", "*", "apps", "*radio*.png"))
+	for _, i := range oldIcons2 {
+		os.Remove(i)
+	}
+
+	// Create directories
+	pixmapsDir := filepath.Join(home, ".local", "share", "pixmaps")
+	iconDir := filepath.Join(home, ".local", "share", "icons", "hicolor", "256x256", "apps")
+
+	os.MkdirAll(pixmapsDir, 0755)
 	os.MkdirAll(iconDir, 0755)
 	os.MkdirAll(desktopDir, 0755)
 
-	// Hash-Check: Icon nur überschreiben wenn es sich geändert hat
-	newHash := sha256.Sum256(iconData)
-	if existing, err := os.ReadFile(iconPath); err == nil {
-		existingHash := sha256.Sum256(existing)
-		if existingHash == newHash {
-			return // Icon unverändert, nichts zu tun
-		}
-	}
-
-	os.WriteFile(iconPath, iconData, 0644)
+	// Write icon to both locations
+	os.WriteFile(filepath.Join(pixmapsDir, "radioplayer.png"), iconData, 0644)
+	os.WriteFile(filepath.Join(iconDir, "radioplayer.png"), iconData, 0644)
 
 	exe, err := os.Executable()
 	if err != nil {
 		exe = "radioplayer"
 	}
 
+	exeName := filepath.Base(exe)
 	desktop := fmt.Sprintf(`[Desktop Entry]
 Name=Radio Player
 Comment=Simple Radio Player
-Exec=%s %%f
+Exec=%s
 Icon=radioplayer
 Terminal=false
 Type=Application
 Categories=AudioVideo;Audio;
-StartupWMClass=radio player
-`, exe)
+StartupNotify=true
+StartupWMClass=%s
+`, exe, exeName)
 
-	os.WriteFile(desktopPath, []byte(desktop), 0644)
+	desktopPath := filepath.Join(desktopDir, "radioplayer.desktop")
+	if err := os.WriteFile(desktopPath, []byte(desktop), 0644); err != nil {
+		return false
+	}
+
+	// Make executable
+	os.Chmod(exe, 0755)
+
+	// Update caches
+	exec.Command("update-desktop-database", desktopDir).Run()
+	exec.Command("gtk-update-icon-cache", "-f", filepath.Join(home, ".local", "share", "icons", "hicolor")).Run()
+
+	return true
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Usage: player <m3u8-file>")
-		os.Exit(1)
-	}
-
-	filename := os.Args[1]
-	tracks, err := parseM3U8(filename)
-	if err != nil {
-		fmt.Printf("Error loading playlist: %v\n", err)
-		os.Exit(1)
-	}
+	// Disable HiDPI auto-scaling
+	os.Setenv("GDK_SCALE", "1")
+	os.Setenv("GDK_DPI_SCALE", "1")
+	os.Setenv("QT_SCALE_FACTOR", "1")
 
 	instance := C.libvlc_new(0, nil)
 	if instance == nil {
@@ -114,28 +172,43 @@ func main() {
 		os.Exit(1)
 	}
 
-	a := app.NewWithID("io.github.daniel.radioplayer")
+	a := app.NewWithID("radioplayer")
 	w := a.NewWindow("Radio Player")
 
-	// Load embedded icon
 	iconData, err := iconFS.ReadFile("icon.png")
 	if err == nil {
 		iconRes := fyne.NewStaticResource("icon.png", iconData)
 		w.SetIcon(iconRes)
-		installDesktopEntry(iconData)
 	}
 
 	p := &Player{
-		window:       w,
-		playlist:     tracks,
-		filteredList: tracks,
-		instance:     instance,
-		playingIdx:   -1,
+		window:     w,
+		instance:   instance,
+		playingIdx: -1,
+		settings:   loadSettings(),
 	}
 
-	p.setupUI()
-	w.Resize(fyne.NewSize(600, 700))
-	w.ShowAndRun()
+	if len(os.Args) >= 2 {
+		p.loadPlaylist(os.Args[1])
+		p.setupUI()
+		w.Resize(fyne.NewSize(400, 500))
+		w.Show()
+		p.autoPlayLastTrack()
+	} else if p.settings.LastFile != "" {
+		if _, err := os.Stat(p.settings.LastFile); err == nil {
+			p.loadPlaylist(p.settings.LastFile)
+			p.setupUI()
+			w.Resize(fyne.NewSize(400, 500))
+			w.Show()
+			p.autoPlayLastTrack()
+		} else {
+			p.showFileDialog(w, a)
+		}
+	} else {
+		p.showFileDialog(w, a)
+	}
+
+	a.Run()
 
 	if p.mediaPlayer != nil {
 		C.libvlc_media_player_release(p.mediaPlayer)
@@ -190,89 +263,152 @@ func extractName(url string) string {
 }
 
 func (p *Player) setupUI() {
-	title := widget.NewLabelWithStyle("Radio Player", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
-	title.Importance = widget.HighImportance
-
 	p.currentTrack = widget.NewLabelWithStyle("Wähle einen Sender", fyne.TextAlignCenter, fyne.TextStyle{Italic: true})
 	p.currentTrack.Wrapping = fyne.TextTruncate
 
-	p.volumeLabel = widget.NewLabelWithStyle("75%", fyne.TextAlignCenter, fyne.TextStyle{Bold: true})
 	p.volume = widget.NewSlider(0, 100)
-	p.volume.SetValue(75)
+	p.volume.SetValue(float64(p.settings.Volume))
 	p.volume.Step = 1
 	p.volume.OnChanged = func(val float64) {
 		v := int(val)
-		p.volumeLabel.SetText(fmt.Sprintf("%d%%", v))
 		p.setVolume(v)
+		p.settings.Volume = v
+		saveSettings(p.settings)
 	}
-
-	volumeDown := widget.NewButtonWithIcon("", theme.ContentRemoveIcon(), func() {
-		newVal := p.volume.Value - 5
-		if newVal < 0 {
-			newVal = 0
-		}
-		p.volume.SetValue(newVal)
-	})
-
-	volumeUp := widget.NewButtonWithIcon("", theme.ContentAddIcon(), func() {
-		newVal := p.volume.Value + 5
-		if newVal > 100 {
-			newVal = 100
-		}
-		p.volume.SetValue(newVal)
-	})
-
-	volumeRow := container.NewBorder(nil, nil, volumeDown, volumeUp,
-		container.NewVBox(p.volumeLabel, p.volume),
-	)
 
 	p.searchEntry = widget.NewEntry()
 	p.searchEntry.SetPlaceHolder("Sender suchen...")
 	p.searchEntry.OnChanged = p.filterPlaylist
 
-	stopBtn := widget.NewButtonWithIcon("Stop", theme.MediaStopIcon(), p.stopPlayback)
-	stopBtn.Importance = widget.DangerImportance
+	p.playStopBtn = widget.NewButtonWithIcon("", theme.MediaPlayIcon(), p.playFirstOrStop)
+
+	p.muteBtn = widget.NewButtonWithIcon("", theme.VolumeUpIcon(), p.toggleMute)
+
+	randomBtn := widget.NewButtonWithIcon("", theme.ViewRefreshIcon(), p.playRandom)
+
+	openBtn := widget.NewButtonWithIcon("", theme.FolderOpenIcon(), func() {
+		fd := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+			if err != nil || r == nil {
+				return
+			}
+			r.Close()
+			if p.loadPlaylist(r.URI().Path()) {
+				p.searchEntry.SetText("")
+				p.list.Refresh()
+			}
+		}, p.window)
+		fd.SetFilter(storage.NewExtensionFileFilter([]string{".m3u8", ".m3u"}))
+		fd.Show()
+	})
+
+	var settingsBtn *widget.Button
+	settingsBtn = widget.NewButtonWithIcon("", theme.SettingsIcon(), func() {
+		installItem := fyne.NewMenuItem("Install to Ubuntu", func() {
+			iconData, err := iconFS.ReadFile("icon.png")
+			if err != nil {
+				dialog.ShowError(fmt.Errorf("could not read icon: %w", err), p.window)
+				return
+			}
+			if installDesktopEntry(iconData) {
+				dialog.ShowInformation("Installed", "Radio Player added to Ubuntu applications.", p.window)
+			}
+		})
+		menu := fyne.NewMenu("", installItem)
+		popUp := widget.NewPopUpMenu(menu, p.window.Canvas())
+		btnPos := fyne.CurrentApp().Driver().AbsolutePositionForObject(settingsBtn)
+		popUp.ShowAtPosition(fyne.NewPos(btnPos.X, btnPos.Y+settingsBtn.Size().Height))
+	})
 
 	p.list = widget.NewList(
 		func() int { return len(p.filteredList) },
 		func() fyne.CanvasObject {
-			return widget.NewLabel("Sender Name")
+			label := widget.NewLabel("Sender Name")
+			label.Resize(fyne.NewSize(0, 24))
+			return label
 		},
 		func(id widget.ListItemID, obj fyne.CanvasObject) {
 			label := obj.(*widget.Label)
-			label.SetText(p.filteredList[id].Name)
 			if p.isPlayingTrack(p.filteredList[id]) {
 				label.TextStyle = fyne.TextStyle{Bold: true}
 			} else {
 				label.TextStyle = fyne.TextStyle{}
 			}
+			label.SetText(p.filteredList[id].Name)
 		},
 	)
 
 	p.list.OnSelected = func(id widget.ListItemID) {
 		p.playTrack(id)
+		p.list.UnselectAll()
 	}
 
 	countLabel := widget.NewLabel(fmt.Sprintf("%d Sender", len(p.playlist)))
 
-	header := container.NewVBox(
-		title,
-		widget.NewSeparator(),
-		p.currentTrack,
-		widget.NewSeparator(),
-	)
+	controlRow := container.NewBorder(nil, nil, p.muteBtn, container.NewHBox(p.playStopBtn, randomBtn, openBtn, settingsBtn), p.volume)
 
 	controls := container.NewVBox(
-		container.NewBorder(nil, nil, nil, stopBtn, volumeRow),
+		p.currentTrack,
+		widget.NewSeparator(),
+		controlRow,
 		widget.NewSeparator(),
 		container.NewBorder(nil, nil, nil, countLabel, p.searchEntry),
 		widget.NewSeparator(),
 	)
 
-	top := container.NewVBox(header, controls)
-	content := container.NewBorder(top, nil, nil, nil, p.list)
+	content := container.NewBorder(controls, nil, nil, nil, p.list)
 
 	p.window.SetContent(content)
+}
+
+func (p *Player) playFirstOrStop() {
+	if p.playingIdx >= 0 {
+		p.stopPlayback()
+	} else if len(p.filteredList) > 0 {
+		p.playTrack(0)
+	}
+}
+
+func (p *Player) playRandom() {
+	if len(p.filteredList) == 0 {
+		return
+	}
+	rand.Seed(time.Now().UnixNano())
+	randomIdx := rand.Intn(len(p.filteredList))
+	p.playTrack(randomIdx)
+}
+
+func (p *Player) updatePlayStopBtn() {
+	if p.playingIdx >= 0 {
+		p.playStopBtn.SetIcon(theme.MediaStopIcon())
+	} else {
+		p.playStopBtn.SetIcon(theme.MediaPlayIcon())
+	}
+}
+
+func (p *Player) autoPlayLastTrack() {
+	if p.settings.LastTrackURL == "" {
+		return
+	}
+	for i, track := range p.playlist {
+		if track.URL == p.settings.LastTrackURL {
+			p.playTrack(widget.ListItemID(i))
+			return
+		}
+	}
+}
+
+func (p *Player) toggleMute() {
+	if p.isMuted {
+		p.isMuted = false
+		p.setVolume(p.savedVolume)
+		p.volume.SetValue(float64(p.savedVolume))
+		p.muteBtn.SetIcon(theme.VolumeUpIcon())
+	} else {
+		p.isMuted = true
+		p.savedVolume = int(p.volume.Value)
+		p.setVolume(0)
+		p.muteBtn.SetIcon(theme.VolumeMuteIcon())
+	}
 }
 
 func (p *Player) isPlayingTrack(track Track) bool {
@@ -309,7 +445,16 @@ func (p *Player) playTrack(id widget.ListItemID) {
 		}
 	}
 
-	p.stopPlayback()
+	// Stop without clearing settings
+	if p.mediaPlayer != nil {
+		C.libvlc_media_player_stop(p.mediaPlayer)
+		C.libvlc_media_player_release(p.mediaPlayer)
+		p.mediaPlayer = nil
+	}
+	if p.media != nil {
+		C.libvlc_media_release(p.media)
+		p.media = nil
+	}
 
 	curl := C.CString(track.URL)
 	defer C.free(unsafe.Pointer(curl))
@@ -317,19 +462,25 @@ func (p *Player) playTrack(id widget.ListItemID) {
 	p.media = C.libvlc_media_new_location(p.instance, curl)
 	if p.media == nil {
 		p.currentTrack.SetText("Fehler beim Laden")
+		p.playingIdx = -1
 		return
 	}
 
 	p.mediaPlayer = C.libvlc_media_player_new_from_media(p.media)
 	if p.mediaPlayer == nil {
 		p.currentTrack.SetText("Fehler beim Erstellen des Players")
+		p.playingIdx = -1
 		return
 	}
 
 	p.setVolume(int(p.volume.Value))
 	C.libvlc_media_player_play(p.mediaPlayer)
 	p.currentTrack.SetText(fmt.Sprintf("Spielt: %s", track.Name))
+	p.settings.LastTrackURL = track.URL
+	saveSettings(p.settings)
+	p.updatePlayStopBtn()
 	p.list.Refresh()
+	p.list.ScrollTo(id)
 }
 
 func (p *Player) setVolume(vol int) {
@@ -349,6 +500,48 @@ func (p *Player) stopPlayback() {
 		p.media = nil
 	}
 	p.playingIdx = -1
+	p.settings.LastTrackURL = ""
+	saveSettings(p.settings)
 	p.currentTrack.SetText("Gestoppt")
+	p.updatePlayStopBtn()
 	p.list.Refresh()
+}
+
+func (p *Player) loadPlaylist(filename string) bool {
+	tracks, err := parseM3U8(filename)
+	if err != nil {
+		return false
+	}
+	p.playlist = tracks
+	p.filteredList = tracks
+	p.currentFile = filename
+
+	// Save absolute path so it works when launched from desktop
+	absPath, err := filepath.Abs(filename)
+	if err != nil {
+		absPath = filename
+	}
+	p.settings.LastFile = absPath
+	saveSettings(p.settings)
+	return true
+}
+
+func (p *Player) showFileDialog(w fyne.Window, a fyne.App) {
+	w.Resize(fyne.NewSize(400, 500))
+	w.Show()
+	fd := dialog.NewFileOpen(func(r fyne.URIReadCloser, err error) {
+		if err != nil || r == nil {
+			a.Quit()
+			return
+		}
+		r.Close()
+		if !p.loadPlaylist(r.URI().Path()) {
+			dialog.ShowError(fmt.Errorf("could not load playlist"), w)
+			a.Quit()
+			return
+		}
+		p.setupUI()
+	}, w)
+	fd.SetFilter(storage.NewExtensionFileFilter([]string{".m3u8", ".m3u"}))
+	fd.Show()
 }

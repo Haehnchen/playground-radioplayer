@@ -3,7 +3,7 @@
 BINARY := radioplayer
 
 build:
-	go build -o $(BINARY)
+	go build -tags wayland -o $(BINARY)
 
 clean:
 	rm -f $(BINARY)
