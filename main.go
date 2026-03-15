@@ -326,11 +326,8 @@ func (p *Player) handleEvents(gtx layout.Context) {
 }
 
 var (
-	colorPlaying  = color.NRGBA{R: 33, G: 150, B: 243, A: 255}
-	colorDivider  = color.NRGBA{R: 180, G: 180, B: 180, A: 255}
-	colorBtnText  = color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-	colorBtnGrey  = color.NRGBA{R: 100, G: 100, B: 100, A: 255}
-	colorBgPlaying = color.NRGBA{R: 33, G: 150, B: 243, A: 255}
+	colorDivider = color.NRGBA{R: 180, G: 180, B: 180, A: 255}
+	colorBtnGrey = color.NRGBA{R: 180, G: 180, B: 180, A: 255}
 )
 
 func (p *Player) draw(gtx layout.Context, th *material.Theme) layout.Dimensions {
@@ -338,18 +335,70 @@ func (p *Player) draw(gtx layout.Context, th *material.Theme) layout.Dimensions 
 		p.stationBtns = append(p.stationBtns, widget.Clickable{})
 	}
 
-	// Paint solid background so text is always visible
 	paint.Fill(gtx.Ops, th.Palette.Bg)
 
 	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		// Status
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.UniformInset(unit.Dp(8)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
 				lbl := material.Body2(th, p.currentStatus())
-				lbl.Color = colorPlaying
+				lbl.Alignment = text.Middle
+				lbl.Font.Style = font.Italic
 				return lbl.Layout(gtx)
 			})
 		}),
 		layout.Rigid(divider),
+		// Controls
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			return layout.UniformInset(unit.Dp(4)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						muteLabel := "♪"
+						if p.isMuted {
+							muteLabel = "✕"
+						}
+						btn := material.Button(th, &p.muteBtn, muteLabel)
+						btn.Background = colorBtnGrey
+						btn.TextSize = unit.Sp(20)
+						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, btn.Layout)
+					}),
+					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx,
+							material.Slider(th, &p.volSlider).Layout,
+						)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						label := "▶"
+						if p.playingIdx >= 0 {
+							label = "■"
+						}
+						btn := material.Button(th, &p.playBtn, label)
+						btn.TextSize = unit.Sp(20)
+						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, btn.Layout)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &p.randomBtn, "↻")
+						btn.Background = colorBtnGrey
+						btn.TextSize = unit.Sp(20)
+						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, btn.Layout)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &p.openBtn, "📁")
+						btn.Background = colorBtnGrey
+						btn.TextSize = unit.Sp(20)
+						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, btn.Layout)
+					}),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						btn := material.Button(th, &p.installBtn, "⚙")
+						btn.Background = colorBtnGrey
+						btn.TextSize = unit.Sp(20)
+						return btn.Layout(gtx)
+					}),
+				)
+			})
+		}),
+		layout.Rigid(divider),
+		// Search + count
 		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 			return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
 				layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
@@ -365,6 +414,7 @@ func (p *Player) draw(gtx layout.Context, th *material.Theme) layout.Dimensions 
 			)
 		}),
 		layout.Rigid(divider),
+		// Station list
 		layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
 			return material.List(th, &p.stationList).Layout(gtx, len(p.filteredList),
 				func(gtx layout.Context, i int) layout.Dimensions {
@@ -372,61 +422,18 @@ func (p *Player) draw(gtx layout.Context, th *material.Theme) layout.Dimensions 
 						return layout.Dimensions{}
 					}
 					track := p.filteredList[i]
-					btn := material.Button(th, &p.stationBtns[i], track.Name)
-					if p.isPlayingTrack(track) {
-						btn.Background = colorBgPlaying
-						btn.Color = colorBtnText
-					} else {
-						btn.Background = color.NRGBA{A: 0}
-						btn.Color = color.NRGBA{A: 220}
-					}
-					return layout.UniformInset(unit.Dp(2)).Layout(gtx, btn.Layout)
+					dims := p.stationBtns[i].Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+						return layout.UniformInset(unit.Dp(10)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+							lbl := material.Body1(th, track.Name)
+							if p.isPlayingTrack(track) {
+								lbl.Font.Weight = font.Bold
+							}
+							return lbl.Layout(gtx)
+						})
+					})
+					divider(gtx)
+					return dims
 				})
-		}),
-		layout.Rigid(divider),
-		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-			return layout.UniformInset(unit.Dp(6)).Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						muteLabel := "♪ Vol"
-						if p.isMuted {
-							muteLabel = "✕ Vol"
-						}
-						btn := material.Button(th, &p.muteBtn, muteLabel)
-						btn.Background = colorBtnGrey
-						return btn.Layout(gtx)
-					}),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
-						return layout.UniformInset(unit.Dp(8)).Layout(gtx,
-							material.Slider(th, &p.volSlider).Layout,
-						)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						label := "▶ Play"
-						if p.playingIdx >= 0 {
-							label = "■ Stop"
-						}
-						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx,
-							material.Button(th, &p.playBtn, label).Layout,
-						)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						btn := material.Button(th, &p.randomBtn, "↻ Rnd")
-						btn.Background = colorBtnGrey
-						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, btn.Layout)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						btn := material.Button(th, &p.openBtn, "⏏ Open")
-						btn.Background = colorBtnGrey
-						return layout.Inset{Right: unit.Dp(4)}.Layout(gtx, btn.Layout)
-					}),
-					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-						btn := material.Button(th, &p.installBtn, "↓ Add")
-						btn.Background = colorBtnGrey
-						return btn.Layout(gtx)
-					}),
-				)
-			})
 		}),
 	)
 }
