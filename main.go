@@ -65,6 +65,9 @@ type Player struct {
 
 func main() {
 	runtime.LockOSThread()
+	if os.Getenv("GSK_RENDERER") == "" {
+		os.Setenv("GSK_RENDERER", "cairo")
+	}
 	glib.SetPrgname(appID)
 	glib.SetApplicationName(appName)
 	writeUserDesktopIdentity()
