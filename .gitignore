@@ -2,3 +2,5 @@
 .claude
 radioplayer
 *.m3u8
+.cache
+.codex
