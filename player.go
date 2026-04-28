@@ -300,10 +300,14 @@ func (p *Player) toggleMute() {
 		p.isMuted = true
 		p.savedVolume = p.settings.Volume
 	}
-	if p.gstPlayer != nil {
-		C.radio_set_mute((*C.GstElement)(p.gstPlayer), gboolean(p.isMuted))
-	}
+	p.setMuted(p.isMuted)
 	p.refreshUI()
+}
+
+func (p *Player) setMuted(muted bool) {
+	if p.gstPlayer != nil {
+		C.radio_set_mute((*C.GstElement)(p.gstPlayer), gboolean(muted))
+	}
 }
 
 func (p *Player) isPlayingTrack(track Track) bool {

@@ -38,7 +38,7 @@ func (p *Player) buildUI() {
 	p.window = gtk.NewApplicationWindow(p.app)
 	p.window.SetTitle(appName)
 	p.window.SetIconName(appID)
-	p.window.SetDefaultSize(420, 640)
+	p.window.SetDefaultSize(420, 480)
 
 	root := gtk.NewBox(gtk.OrientationVertical, 6)
 	setMargin(root, 8)
@@ -48,12 +48,7 @@ func (p *Player) buildUI() {
 	scroll := gtk.NewEventControllerScroll(gtk.EventControllerScrollVertical)
 	scroll.SetPropagationPhase(gtk.PhaseCapture)
 	scroll.ConnectScroll(func(_ float64, dy float64) bool {
-		if dy < 0 {
-			p.updateVolume(p.settings.Volume + 1)
-		} else if dy > 0 {
-			p.updateVolume(p.settings.Volume - 1)
-		}
-		return false
+		return p.scrollVolume(dy)
 	})
 	top.AddController(scroll)
 	root.Append(top)
@@ -65,7 +60,7 @@ func (p *Player) buildUI() {
 	top.Append(gtk.NewSeparator(gtk.OrientationHorizontal))
 
 	controls := gtk.NewBox(gtk.OrientationHorizontal, 6)
-	p.muteBtn = iconButton("audio-volume-high-symbolic", "Mute")
+	p.muteBtn = iconButton("xsi-audio-volume-high-symbolic", "Mute")
 	p.volumeScale = gtk.NewScaleWithRange(gtk.OrientationHorizontal, 0, 100, 1)
 	p.volumeScale.SetDrawValue(false)
 	p.volumeScale.SetValue(float64(p.settings.Volume))
@@ -145,25 +140,49 @@ type marginSetter interface {
 }
 
 func setMargin(widget marginSetter, margin int) {
-	widget.SetMarginTop(margin)
-	widget.SetMarginBottom(margin)
-	widget.SetMarginStart(margin)
-	widget.SetMarginEnd(margin)
+	setMargins(widget, margin, margin, margin, margin)
+}
+
+func setMargins(widget marginSetter, top, right, bottom, left int) {
+	widget.SetMarginTop(top)
+	widget.SetMarginBottom(bottom)
+	widget.SetMarginStart(left)
+	widget.SetMarginEnd(right)
 }
 
 func iconButton(iconName, tooltip string) *gtk.Button {
 	button := gtk.NewButtonFromIconName(iconName)
 	button.SetTooltipText(tooltip)
+	button.SetFocusOnClick(false)
 	return button
 }
 
+func (p *Player) scrollVolume(dy float64) bool {
+	const step = 3
+	if dy < 0 {
+		p.updateVolume(p.settings.Volume + step)
+		return true
+	}
+	if dy > 0 {
+		p.updateVolume(p.settings.Volume - step)
+		return true
+	}
+	return false
+}
+
 func (p *Player) updateVolume(vol int) {
+	oldVolume := p.settings.Volume
+	shouldUnmute := p.isMuted && vol > oldVolume
 	if vol < 0 {
 		vol = 0
 	} else if vol > 100 {
 		vol = 100
 	}
-	if p.settings.Volume == vol {
+	if shouldUnmute {
+		p.isMuted = false
+		p.setMuted(false)
+	}
+	if p.settings.Volume == vol && !shouldUnmute {
 		return
 	}
 	p.settings.Volume = vol
@@ -172,6 +191,7 @@ func (p *Player) updateVolume(vol int) {
 		p.setVolume(vol)
 	}
 	saveSettings(p.settings)
+	p.refreshUI()
 }
 
 func (p *Player) rebuildStationList() {
@@ -195,7 +215,7 @@ func (p *Player) rebuildStationList() {
 		label := gtk.NewLabel(track.Name)
 		label.SetXAlign(0)
 		label.SetEllipsize(pango.EllipsizeEnd)
-		setMargin(label, 8)
+		setMargin(label, 4)
 		row.SetChild(label)
 		p.rowTracks[row] = track
 		p.stationList.Append(row)
@@ -213,9 +233,9 @@ func (p *Player) refreshUI() {
 		p.playBtn.SetIconName("media-playback-start-symbolic")
 	}
 	if p.isMuted {
-		p.muteBtn.SetIconName("audio-volume-muted-symbolic")
+		p.muteBtn.SetIconName("xsi-audio-volume-muted-symbolic")
 	} else {
-		p.muteBtn.SetIconName("audio-volume-high-symbolic")
+		p.muteBtn.SetIconName("xsi-audio-volume-high-symbolic")
 	}
 	if len(p.filteredList) == 0 {
 		p.countLabel.SetText("")
