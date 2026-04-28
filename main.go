@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"fmt"
 	"os"
 	"runtime"
 	"unsafe"
@@ -31,7 +32,8 @@ type Settings struct {
 }
 
 type Player struct {
-	gstPlayer unsafe.Pointer
+	mediaPlayer unsafe.Pointer
+	media       unsafe.Pointer
 
 	playlist      []Track
 	filteredList  []Track
@@ -69,6 +71,7 @@ func main() {
 	writeUserDesktopIdentity()
 
 	if !initAudioBackend() {
+		fmt.Fprintln(os.Stderr, "Failed to init VLC. Install: sudo apt install libvlc-dev vlc")
 		os.Exit(1)
 	}
 

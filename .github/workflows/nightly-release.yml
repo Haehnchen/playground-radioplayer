@@ -42,10 +42,10 @@ jobs:
             build-essential \
             gobject-introspection \
             libgirepository1.0-dev \
-            libgstreamer-plugins-base1.0-dev \
-            libgstreamer1.0-dev \
             libgtk-4-dev \
+            libvlc-dev \
             pkg-config \
+            vlc \
             zip
 
       - name: Set build metadata

@@ -6,7 +6,7 @@ BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -X main.buildVersion=$(BUILD_VERSION) -X main.buildDate=$(BUILD_DATE)
 
 build:
-	pkg-config --exists gtk4 gstreamer-1.0
+	pkg-config --exists gtk4 libvlc
 	go build -ldflags "$(LDFLAGS)" -o $(BINARY)
 
 clean:

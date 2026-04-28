@@ -1,231 +1,159 @@
 package main
 
 /*
-#cgo pkg-config: gstreamer-1.0
+#cgo pkg-config: libvlc
+#include <ctype.h>
+#include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
-#include <gst/gst.h>
+#include <string.h>
+#include <vlc/vlc.h>
 
-typedef struct {
-	gchar *codec;
-	gchar *title;
-	guint bitrate;
-	guint nominal_bitrate;
-	guint version;
-} RadioStreamInfo;
+static libvlc_instance_t* radio_new_vlc_instance(void) {
+	const char *args[] = {
+		"--no-video",
+		"--network-caching=1000",
+		"--file-caching=1000",
+		"--live-caching=1000",
+		"--no-xlib"
+	};
+	return libvlc_new(5, args);
+}
 
-static void radio_start_bus_watch(GstElement *player);
-static void radio_stop_bus_watch(GstElement *player);
-
-static void radio_stream_info_free(gpointer data) {
-	RadioStreamInfo *info = data;
-	if (info != NULL) {
-		g_free(info->codec);
-		g_free(info->title);
-		g_free(info);
+static char* radio_media_meta(libvlc_media_t *media, libvlc_meta_t meta) {
+	if (media == NULL) {
+		return NULL;
 	}
+	return libvlc_media_get_meta(media, meta);
 }
 
-static gboolean radio_has_property(GObject *object, const char *name) {
-	return object != NULL && g_object_class_find_property(G_OBJECT_GET_CLASS(object), name) != NULL;
-}
+static void radio_append_info_part(char *target, size_t target_size, const char *part) {
+	size_t current_len;
+	size_t remaining;
 
-static void radio_set_bool_if_property(GObject *object, const char *name, gboolean value) {
-	if (radio_has_property(object, name)) {
-		g_object_set(object, name, value, NULL);
+	if (part == NULL || part[0] == '\0') {
+		return;
 	}
-}
 
-static void radio_set_uint_if_property(GObject *object, const char *name, guint value) {
-	if (radio_has_property(object, name)) {
-		g_object_set(object, name, value, NULL);
+	current_len = strlen(target);
+	if (current_len >= target_size - 1) {
+		return;
 	}
-}
 
-static void radio_set_string_if_property(GObject *object, const char *name, const char *value) {
-	if (radio_has_property(object, name)) {
-		g_object_set(object, name, value, NULL);
+	if (current_len > 0) {
+		remaining = target_size - current_len - 1;
+		strncat(target, ", ", remaining);
+		current_len = strlen(target);
 	}
+
+	remaining = target_size - current_len - 1;
+	strncat(target, part, remaining);
 }
 
-static void radio_on_source_setup(GstElement *bin, GstElement *source, gpointer data) {
-	GObject *object = G_OBJECT(source);
-	radio_set_bool_if_property(object, "automatic-redirect", TRUE);
-	radio_set_bool_if_property(object, "iradio-mode", TRUE);
-	radio_set_bool_if_property(object, "keep-alive", TRUE);
-	radio_set_uint_if_property(object, "blocksize", 32768);
-	radio_set_string_if_property(object, "user-agent", "Radio Player/1.0 GStreamer");
-}
+static void radio_codec_name(uint32_t codec, char *target, size_t target_size) {
+	char fourcc[5] = {
+		(char)(codec & 0xff),
+		(char)((codec >> 8) & 0xff),
+		(char)((codec >> 16) & 0xff),
+		(char)((codec >> 24) & 0xff),
+		'\0'
+	};
+	size_t len = 4;
 
-static GstElement* radio_new_pipeline(const char *uri) {
-	GstElement *pipeline = gst_element_factory_make("playbin", "radio-player");
-	GstElement *sink = gst_element_factory_make("autoaudiosink", "sink");
-
-	if (pipeline == NULL || sink == NULL) {
-		if (pipeline != NULL) {
-			gst_object_unref(pipeline);
+	for (int i = 0; i < 4; i++) {
+		if (fourcc[i] == '\0' || !isprint((unsigned char)fourcc[i])) {
+			fourcc[i] = ' ';
 		}
+	}
+	while (len > 0 && fourcc[len - 1] == ' ') {
+		fourcc[len - 1] = '\0';
+		len--;
+	}
+
+	if (strcmp(fourcc, "mp4a") == 0 || strcmp(fourcc, "aac") == 0) {
+		snprintf(target, target_size, "AAC");
+	} else if (strcmp(fourcc, "mpga") == 0 || strcmp(fourcc, ".mp3") == 0 || strcmp(fourcc, "mp3") == 0) {
+		snprintf(target, target_size, "MP3");
+	} else if (strcmp(fourcc, "opus") == 0) {
+		snprintf(target, target_size, "Opus");
+	} else if (strcmp(fourcc, "vorb") == 0) {
+		snprintf(target, target_size, "Vorbis");
+	} else if (strcmp(fourcc, "flac") == 0) {
+		snprintf(target, target_size, "FLAC");
+	} else if (fourcc[0] != '\0') {
+		snprintf(target, target_size, "%s", fourcc);
+	} else {
+		snprintf(target, target_size, "Audio");
+	}
+}
+
+static char* radio_stream_info(libvlc_media_t *media) {
+	libvlc_media_track_t **tracks = NULL;
+	unsigned int count;
+	char info[256] = "";
+
+	if (media == NULL) {
 		return NULL;
 	}
 
-	g_object_set(G_OBJECT(sink),
-		"sync", FALSE,
-		NULL);
+	count = libvlc_media_tracks_get(media, &tracks);
+	if (tracks != NULL) {
+		for (unsigned int i = 0; i < count; i++) {
+			libvlc_media_track_t *track = tracks[i];
+			char part[64];
 
-	g_object_set(G_OBJECT(pipeline),
-		"uri", uri,
-		"audio-sink", sink,
-		"buffer-duration", (gint64)(5 * GST_SECOND),
-		"flags", (guint)(0x00000002 | 0x00000010 | 0x00000100),
-		NULL);
-
-	g_object_set_data_full(G_OBJECT(pipeline), "radio-info", g_new0(RadioStreamInfo, 1), radio_stream_info_free);
-	g_signal_connect(pipeline, "source-setup", G_CALLBACK(radio_on_source_setup), NULL);
-	radio_start_bus_watch(pipeline);
-	return pipeline;
-}
-
-static void radio_set_volume(GstElement *player, double volume) {
-	g_object_set(G_OBJECT(player), "volume", volume, NULL);
-}
-
-static void radio_set_mute(GstElement *player, gboolean muted) {
-	g_object_set(G_OBJECT(player), "mute", muted, NULL);
-}
-
-static int radio_play(GstElement *player) {
-	return gst_element_set_state(player, GST_STATE_PLAYING) != GST_STATE_CHANGE_FAILURE;
-}
-
-static void radio_stop(GstElement *player) {
-	gst_element_set_state(player, GST_STATE_NULL);
-}
-
-static void radio_unref(GstElement *player) {
-	radio_stop_bus_watch(player);
-	gst_object_unref(player);
-}
-
-static gboolean radio_update_info_from_tags(RadioStreamInfo *info, GstTagList *tags) {
-	gboolean changed = FALSE;
-	gchar *codec = NULL;
-	gchar *title = NULL;
-	guint bitrate = 0;
-	if (gst_tag_list_get_string(tags, GST_TAG_AUDIO_CODEC, &codec)) {
-		if (g_strcmp0(info->codec, codec) != 0) {
-			g_free(info->codec);
-			info->codec = codec;
-			changed = TRUE;
-		} else {
-			g_free(codec);
-		}
-	}
-	if (gst_tag_list_get_string(tags, GST_TAG_TITLE, &title)) {
-		if (g_strcmp0(info->title, title) != 0) {
-			g_free(info->title);
-			info->title = title;
-			changed = TRUE;
-		} else {
-			g_free(title);
-		}
-	}
-	if (gst_tag_list_get_uint(tags, GST_TAG_BITRATE, &bitrate) && info->bitrate != bitrate) {
-		info->bitrate = bitrate;
-		changed = TRUE;
-	}
-	if (gst_tag_list_get_uint(tags, GST_TAG_NOMINAL_BITRATE, &bitrate) && info->nominal_bitrate != bitrate) {
-		info->nominal_bitrate = bitrate;
-		changed = TRUE;
-	}
-	return changed;
-}
-
-static gboolean radio_on_bus_message(GstBus *bus, GstMessage *message, gpointer data) {
-	GstElement *player = GST_ELEMENT(data);
-	RadioStreamInfo *info = g_object_get_data(G_OBJECT(player), "radio-info");
-	if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_TAG) {
-		if (info == NULL) {
-			return G_SOURCE_CONTINUE;
-		}
-		GstTagList *tags = NULL;
-		gst_message_parse_tag(message, &tags);
-		if (tags != NULL) {
-			if (radio_update_info_from_tags(info, tags)) {
-				info->version++;
+			if (track == NULL || track->i_type != libvlc_track_audio) {
+				continue;
 			}
-			gst_tag_list_unref(tags);
-		}
-	} else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_BUFFERING) {
-		gint percent = 100;
-		gst_message_parse_buffering(message, &percent);
-		if (percent < 100) {
-			gst_element_set_state(player, GST_STATE_PAUSED);
-		} else {
-			gst_element_set_state(player, GST_STATE_PLAYING);
+
+			radio_codec_name(track->i_codec, part, sizeof(part));
+			radio_append_info_part(info, sizeof(info), part);
+
+			if (track->i_bitrate > 0) {
+				snprintf(part, sizeof(part), "%u kbps", (track->i_bitrate + 500) / 1000);
+				radio_append_info_part(info, sizeof(info), part);
+			}
+
+			if (track->audio != NULL) {
+				if (track->audio->i_rate > 0) {
+					snprintf(part, sizeof(part), "%.1f kHz", track->audio->i_rate / 1000.0);
+					radio_append_info_part(info, sizeof(info), part);
+				}
+				if (track->audio->i_channels == 1) {
+					radio_append_info_part(info, sizeof(info), "mono");
+				} else if (track->audio->i_channels == 2) {
+					radio_append_info_part(info, sizeof(info), "stereo");
+				} else if (track->audio->i_channels > 2) {
+					snprintf(part, sizeof(part), "%u ch", track->audio->i_channels);
+					radio_append_info_part(info, sizeof(info), part);
+				}
+			}
+			break;
 		}
 	}
-	return G_SOURCE_CONTINUE;
-}
 
-static void radio_start_bus_watch(GstElement *player) {
-	GstBus *bus = gst_element_get_bus(player);
-	guint watch_id = gst_bus_add_watch(bus, radio_on_bus_message, player);
-	g_object_set_data(G_OBJECT(player), "radio-bus-watch-id", GUINT_TO_POINTER(watch_id));
-	gst_object_unref(bus);
-}
-
-static void radio_stop_bus_watch(GstElement *player) {
-	guint watch_id = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(player), "radio-bus-watch-id"));
-	if (watch_id != 0) {
-		g_source_remove(watch_id);
-		g_object_set_data(G_OBJECT(player), "radio-bus-watch-id", GUINT_TO_POINTER(0));
+	if (tracks != NULL) {
+		libvlc_media_tracks_release(tracks, count);
 	}
-}
 
-static char* radio_stream_info(GstElement *player) {
-	RadioStreamInfo *info = g_object_get_data(G_OBJECT(player), "radio-info");
-	if (info == NULL) {
+	if (info[0] == '\0') {
+		char *description = libvlc_media_get_meta(media, libvlc_meta_Description);
+		if (description != NULL && description[0] != '\0') {
+			char *copy = strdup(description);
+			libvlc_free(description);
+			return copy;
+		}
+		if (description != NULL) {
+			libvlc_free(description);
+		}
 		return NULL;
 	}
 
-	GString *out = g_string_new(NULL);
-	if (info->codec != NULL && info->codec[0] != '\0') {
-		g_string_append(out, info->codec);
-	}
-	guint bitrate = info->bitrate > 0 ? info->bitrate : info->nominal_bitrate;
-	if (bitrate > 0) {
-		if (out->len > 0) {
-			g_string_append(out, ", ");
-		}
-		g_string_append_printf(out, "%u kbps", bitrate / 1000);
-	}
-	if (out->len == 0) {
-		g_string_free(out, TRUE);
-		return NULL;
-	}
-	return g_string_free(out, FALSE);
-}
-
-static char* radio_stream_title(GstElement *player) {
-	RadioStreamInfo *info = g_object_get_data(G_OBJECT(player), "radio-info");
-	if (info == NULL) {
-		return NULL;
-	}
-	if (info->title != NULL && info->title[0] != '\0') {
-		return g_strdup(info->title);
-	}
-	return NULL;
-}
-
-static guint radio_stream_version(GstElement *player) {
-	RadioStreamInfo *info = g_object_get_data(G_OBJECT(player), "radio-info");
-	if (info == NULL) {
-		return 0;
-	}
-	return info->version;
+	return strdup(info);
 }
 
 static void radio_free_string(char *value) {
-	g_free(value);
+	free(value);
 }
 */
 import "C"
@@ -245,8 +173,14 @@ import (
 	glib "github.com/diamondburned/gotk4/pkg/glib/v2"
 )
 
+var vlcInstance unsafe.Pointer
+
 func initAudioBackend() bool {
-	C.gst_init(nil, nil)
+	instance := C.radio_new_vlc_instance()
+	if instance == nil {
+		return false
+	}
+	vlcInstance = unsafe.Pointer(instance)
 	return true
 }
 
@@ -263,31 +197,37 @@ func (p *Player) playTrack(id int) {
 		}
 	}
 
-	if p.gstPlayer != nil {
-		p.stopStreamInfoPolling()
-		player := (*C.GstElement)(p.gstPlayer)
-		C.radio_stop(player)
-		C.radio_unref(player)
-		p.gstPlayer = nil
-	}
+	p.releaseCurrentMedia()
 
 	curl := C.CString(track.URL)
 	defer C.free(unsafe.Pointer(curl))
 
-	player := C.radio_new_pipeline(curl)
+	media := C.libvlc_media_new_location((*C.libvlc_instance_t)(vlcInstance), curl)
+	if media == nil {
+		p.statusMsg = "Error loading " + track.Name
+		p.playingIdx = -1
+		return
+	}
+
+	cache := C.CString(":network-caching=1000")
+	C.libvlc_media_add_option(media, cache)
+	C.free(unsafe.Pointer(cache))
+
+	player := C.libvlc_media_player_new_from_media(media)
 	if player == nil {
+		C.libvlc_media_release(media)
 		p.statusMsg = "Error creating player"
 		p.playingIdx = -1
 		return
 	}
-	p.gstPlayer = unsafe.Pointer(player)
+	p.media = unsafe.Pointer(media)
+	p.mediaPlayer = unsafe.Pointer(player)
 	p.setVolume(p.settings.Volume)
-	C.radio_set_mute(player, gboolean(p.isMuted))
-	if C.radio_play(player) == 0 {
+	p.setMuted(p.isMuted)
+	if C.libvlc_media_player_play(player) != 0 {
 		p.statusMsg = "Error playing " + track.Name
 		p.playingIdx = -1
-		C.radio_unref(player)
-		p.gstPlayer = nil
+		p.releaseCurrentMedia()
 		return
 	}
 	p.statusMsg = ""
@@ -300,14 +240,22 @@ func (p *Player) playTrack(id int) {
 	p.startStreamInfoPolling()
 }
 
-func (p *Player) stopPlayback() {
+func (p *Player) releaseCurrentMedia() {
 	p.stopStreamInfoPolling()
-	if p.gstPlayer != nil {
-		player := (*C.GstElement)(p.gstPlayer)
-		C.radio_stop(player)
-		C.radio_unref(player)
-		p.gstPlayer = nil
+	if p.mediaPlayer != nil {
+		player := (*C.libvlc_media_player_t)(p.mediaPlayer)
+		C.libvlc_media_player_stop(player)
+		C.libvlc_media_player_release(player)
+		p.mediaPlayer = nil
 	}
+	if p.media != nil {
+		C.libvlc_media_release((*C.libvlc_media_t)(p.media))
+		p.media = nil
+	}
+}
+
+func (p *Player) stopPlayback() {
+	p.releaseCurrentMedia()
 	p.playingIdx = -1
 	p.streamInfo = ""
 	p.streamTitle = ""
@@ -318,8 +266,8 @@ func (p *Player) stopPlayback() {
 }
 
 func (p *Player) setVolume(vol int) {
-	if p.gstPlayer != nil {
-		C.radio_set_volume((*C.GstElement)(p.gstPlayer), C.double(float64(vol)/100))
+	if p.mediaPlayer != nil {
+		C.libvlc_audio_set_volume((*C.libvlc_media_player_t)(p.mediaPlayer), C.int(vol))
 	}
 }
 
@@ -343,8 +291,8 @@ func (p *Player) toggleMute() {
 }
 
 func (p *Player) setMuted(muted bool) {
-	if p.gstPlayer != nil {
-		C.radio_set_mute((*C.GstElement)(p.gstPlayer), gboolean(muted))
+	if p.mediaPlayer != nil {
+		C.libvlc_audio_set_mute((*C.libvlc_media_player_t)(p.mediaPlayer), C.int(boolToInt(muted)))
 	}
 }
 
@@ -610,34 +558,27 @@ func (p *Player) cleanup() {
 		saveSettings(p.settings)
 		p.settingsDirty = false
 	}
-	p.stopStreamInfoPolling()
-	if p.gstPlayer != nil {
-		player := (*C.GstElement)(p.gstPlayer)
-		C.radio_stop(player)
-		C.radio_unref(player)
-		p.gstPlayer = nil
+	p.releaseCurrentMedia()
+	if vlcInstance != nil {
+		C.libvlc_release((*C.libvlc_instance_t)(vlcInstance))
+		vlcInstance = nil
 	}
 }
 
-func gboolean(value bool) C.gboolean {
+func boolToInt(value bool) int {
 	if value {
-		return C.gboolean(1)
+		return 1
 	}
-	return C.gboolean(0)
+	return 0
 }
 
 func (p *Player) startStreamInfoPolling() {
 	p.stopStreamInfoPolling()
 	p.infoPoll = glib.TimeoutAdd(1000, func() bool {
-		if p.playingIdx < 0 || p.gstPlayer == nil {
+		if p.playingIdx < 0 || p.media == nil {
 			p.infoPoll = 0
 			return false
 		}
-		version := uint(C.radio_stream_version((*C.GstElement)(p.gstPlayer)))
-		if version == p.streamVersion {
-			return true
-		}
-		p.streamVersion = version
 		changed := false
 		if info := p.readStreamInfo(); info != "" && info != p.streamInfo {
 			p.streamInfo = info
@@ -662,31 +603,42 @@ func (p *Player) stopStreamInfoPolling() {
 }
 
 func (p *Player) readStreamInfo() string {
-	if p.gstPlayer == nil {
+	if p.media == nil {
 		return ""
 	}
-	info := C.radio_stream_info((*C.GstElement)(p.gstPlayer))
-	if info == nil {
+	value := C.radio_stream_info((*C.libvlc_media_t)(p.media))
+	if value == nil {
 		return ""
 	}
-	defer C.radio_free_string(info)
-	return C.GoString(info)
+	defer C.radio_free_string(value)
+	return C.GoString(value)
 }
 
 func (p *Player) readStreamTitle() string {
-	if p.gstPlayer == nil {
+	title := p.readVLCMeta(C.libvlc_meta_NowPlaying)
+	if title == "" {
+		title = p.readVLCMeta(C.libvlc_meta_Title)
+	}
+	if title == "" {
 		return ""
 	}
-	title := C.radio_stream_title((*C.GstElement)(p.gstPlayer))
-	if title == nil {
-		return ""
-	}
-	defer C.radio_free_string(title)
-	cleaned := cleanStreamTitle(C.GoString(title))
+	cleaned := cleanStreamTitle(title)
 	if p.streamTitleMatchesStation(cleaned) {
 		return ""
 	}
 	return cleaned
+}
+
+func (p *Player) readVLCMeta(meta C.libvlc_meta_t) string {
+	if p.media == nil {
+		return ""
+	}
+	value := C.radio_media_meta((*C.libvlc_media_t)(p.media), meta)
+	if value == nil {
+		return ""
+	}
+	defer C.libvlc_free(unsafe.Pointer(value))
+	return C.GoString(value)
 }
 
 func cleanStreamTitle(title string) string {

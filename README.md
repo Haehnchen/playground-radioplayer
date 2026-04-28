@@ -1,6 +1,6 @@
 # Radio Player
 
-A simple radio player with a native GTK 4 UI, built in Go. Playback uses GStreamer inline via CGO.
+A simple radio player with a native GTK 4 UI, built in Go. Playback uses libVLC inline via CGO.
 
 <p align="center">
   <img src="icon.png" alt="Radio Player icon" width="46">
@@ -23,12 +23,12 @@ A simple radio player with a native GTK 4 UI, built in Go. Playback uses GStream
 - Build tools (`gcc`, `make`, `pkg-config`)
 - GTK 4 development files
 - GObject Introspection development files
-- GStreamer development files and playback plugins
+- VLC and libVLC development files
 
 ### Linux (Debian/Ubuntu)
 
 ```bash
-sudo apt install build-essential pkg-config libgtk-4-dev gobject-introspection libgirepository1.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-plugins-good
+sudo apt install build-essential pkg-config libgtk-4-dev gobject-introspection libgirepository1.0-dev libvlc-dev vlc
 ```
 
 ## Build
