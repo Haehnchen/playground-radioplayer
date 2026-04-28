@@ -10,7 +10,7 @@ A simple radio player with a native GTK 4 UI, built in Go. Playback uses GStream
 
 ## Features
 
-- Play internet radio streams from M3U8 playlists
+- Play internet radio streams from M3U, M3U8, and XSPF playlists
 - Show the current stream title when the station provides metadata
 - Search/filter stations
 - Volume control
@@ -43,7 +43,7 @@ make build
 ```
 
 ```bash
-./radioplayer <m3u8-file>
+./radioplayer <playlist-file>
 ```
 
 ## Make Targets
@@ -55,14 +55,6 @@ make build
 | `make run` | Build and run with default playlist |
 | `make install` | Install to `~/.local/bin/` |
 
-## M3U8 Format
+## Playlist Files
 
-The player supports standard M3U8 playlists with `#EXTINF` tags:
-
-```m3u8
-#EXTM3U
-#EXTINF:-1,BBC Radio 1
-https://stream.live.vc.bbcmedia.co.uk/bbc_radio_one
-#EXTINF:-1,Jazz FM
-https://edge-bauerall-01-gos2.sharp-stream.com/jazz.mp3
-```
+The player supports standard M3U, M3U8, and XSPF playlist files.
