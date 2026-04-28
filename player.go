@@ -23,6 +23,65 @@ static void radio_stream_info_free(gpointer data) {
 	}
 }
 
+static gboolean radio_has_property(GObject *object, const char *name) {
+	return object != NULL && g_object_class_find_property(G_OBJECT_GET_CLASS(object), name) != NULL;
+}
+
+static void radio_set_bool_if_property(GObject *object, const char *name, gboolean value) {
+	if (radio_has_property(object, name)) {
+		g_object_set(object, name, value, NULL);
+	}
+}
+
+static void radio_set_int_if_property(GObject *object, const char *name, gint value) {
+	if (radio_has_property(object, name)) {
+		g_object_set(object, name, value, NULL);
+	}
+}
+
+static void radio_set_uint_if_property(GObject *object, const char *name, guint value) {
+	if (radio_has_property(object, name)) {
+		g_object_set(object, name, value, NULL);
+	}
+}
+
+static void radio_set_int64_if_property(GObject *object, const char *name, gint64 value) {
+	if (radio_has_property(object, name)) {
+		g_object_set(object, name, value, NULL);
+	}
+}
+
+static void radio_set_uint64_if_property(GObject *object, const char *name, guint64 value) {
+	if (radio_has_property(object, name)) {
+		g_object_set(object, name, value, NULL);
+	}
+}
+
+static void radio_set_double_if_property(GObject *object, const char *name, gdouble value) {
+	if (radio_has_property(object, name)) {
+		g_object_set(object, name, value, NULL);
+	}
+}
+
+static void radio_set_string_if_property(GObject *object, const char *name, const char *value) {
+	if (radio_has_property(object, name)) {
+		g_object_set(object, name, value, NULL);
+	}
+}
+
+static void radio_on_source_setup(GstElement *bin, GstElement *source, gpointer data) {
+	GObject *object = G_OBJECT(source);
+	radio_set_bool_if_property(object, "automatic-redirect", TRUE);
+	radio_set_bool_if_property(object, "iradio-mode", TRUE);
+	radio_set_bool_if_property(object, "keep-alive", TRUE);
+	radio_set_uint_if_property(object, "blocksize", 32768);
+	radio_set_uint_if_property(object, "timeout", 20);
+	radio_set_int_if_property(object, "retries", 8);
+	radio_set_double_if_property(object, "retry-backoff-factor", 0.35);
+	radio_set_double_if_property(object, "retry-backoff-max", 8.0);
+	radio_set_string_if_property(object, "user-agent", "Radio Player/1.0 GStreamer");
+}
+
 static void radio_on_pad_added(GstElement *src, GstPad *pad, gpointer data) {
 	GstElement *queue = GST_ELEMENT(data);
 	GstPad *sink = gst_element_get_static_pad(queue, "sink");
@@ -65,6 +124,11 @@ static GstElement* radio_new_pipeline(const char *uri) {
 	}
 
 	g_object_set(G_OBJECT(source), "uri", uri, NULL);
+	radio_set_bool_if_property(G_OBJECT(source), "use-buffering", TRUE);
+	radio_set_int_if_property(G_OBJECT(source), "buffer-size", 2 * 1024 * 1024);
+	radio_set_int64_if_property(G_OBJECT(source), "buffer-duration", 10 * GST_SECOND);
+	radio_set_uint64_if_property(G_OBJECT(source), "ring-buffer-max-size", 8 * 1024 * 1024);
+
 	g_object_set(G_OBJECT(queue),
 		"max-size-buffers", 0,
 		"max-size-bytes", 0,
@@ -79,6 +143,7 @@ static GstElement* radio_new_pipeline(const char *uri) {
 		return NULL;
 	}
 	g_object_set_data_full(G_OBJECT(pipeline), "radio-info", g_new0(RadioStreamInfo, 1), radio_stream_info_free);
+	g_signal_connect(source, "source-setup", G_CALLBACK(radio_on_source_setup), NULL);
 	g_signal_connect(source, "pad-added", G_CALLBACK(radio_on_pad_added), queue);
 	return pipeline;
 }
