@@ -2,6 +2,12 @@
 
 A simple radio player with a native GTK 4 UI, built in Go. Playback uses GStreamer inline via CGO.
 
+<p align="center">
+  <img src="icon.png" alt="Radio Player icon" width="46">
+  <br>
+  <img src="docs/screenshot.webp" alt="Radio Player GTK interface" width="260">
+</p>
+
 ## Features
 
 - Play internet radio streams from M3U8 playlists
