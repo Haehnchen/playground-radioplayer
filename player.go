@@ -150,8 +150,8 @@ static GstElement* radio_new_pipeline(const char *uri) {
 	g_object_set(G_OBJECT(queue),
 		"max-size-buffers", 0,
 		"max-size-bytes", 0,
-		"max-size-time", (guint64)(250 * GST_MSECOND),
-		"min-threshold-time", (guint64)0,
+		"max-size-time", (guint64)(3 * GST_SECOND),
+		"min-threshold-time", (guint64)(1 * GST_SECOND),
 		"silent", TRUE,
 		NULL);
 
@@ -281,10 +281,10 @@ static GstPadProbeReturn radio_on_audio_pad_event(GstPad *pad, GstPadProbeInfo *
 static gboolean radio_on_bus_message(GstBus *bus, GstMessage *message, gpointer data) {
 	GstElement *player = GST_ELEMENT(data);
 	RadioStreamInfo *info = g_object_get_data(G_OBJECT(player), "radio-info");
-	if (info == NULL) {
-		return G_SOURCE_CONTINUE;
-	}
 	if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_TAG) {
+		if (info == NULL) {
+			return G_SOURCE_CONTINUE;
+		}
 		GstTagList *tags = NULL;
 		gst_message_parse_tag(message, &tags);
 		if (tags != NULL) {
@@ -292,6 +292,14 @@ static gboolean radio_on_bus_message(GstBus *bus, GstMessage *message, gpointer 
 				info->version++;
 			}
 			gst_tag_list_unref(tags);
+		}
+	} else if (GST_MESSAGE_TYPE(message) == GST_MESSAGE_BUFFERING) {
+		gint percent = 100;
+		gst_message_parse_buffering(message, &percent);
+		if (percent < 100) {
+			gst_element_set_state(player, GST_STATE_PAUSED);
+		} else {
+			gst_element_set_state(player, GST_STATE_PLAYING);
 		}
 	}
 	return G_SOURCE_CONTINUE;
@@ -439,6 +447,8 @@ func (p *Player) playTrack(id int) {
 	if C.radio_play(player) == 0 {
 		p.statusMsg = "Error playing " + track.Name
 		p.playingIdx = -1
+		C.radio_unref(player)
+		p.gstPlayer = nil
 		return
 	}
 	p.statusMsg = ""
@@ -454,7 +464,10 @@ func (p *Player) playTrack(id int) {
 func (p *Player) stopPlayback() {
 	p.stopStreamInfoPolling()
 	if p.gstPlayer != nil {
-		C.radio_stop((*C.GstElement)(p.gstPlayer))
+		player := (*C.GstElement)(p.gstPlayer)
+		C.radio_stop(player)
+		C.radio_unref(player)
+		p.gstPlayer = nil
 	}
 	p.playingIdx = -1
 	p.streamInfo = ""
