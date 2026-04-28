@@ -40,6 +40,8 @@ type Player struct {
 	isMuted      bool
 	savedVolume  int
 	statusMsg    string
+	streamInfo   string
+	infoPoll     glib.SourceHandle
 
 	app         *gtk.Application
 	window      *gtk.ApplicationWindow

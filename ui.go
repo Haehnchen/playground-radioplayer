@@ -206,7 +206,7 @@ func (p *Player) refreshUI() {
 	if p.statusLabel == nil {
 		return
 	}
-	p.statusLabel.SetText(p.currentStatus())
+	p.statusLabel.SetMarkup(p.currentStatusMarkup())
 	if p.playingIdx >= 0 {
 		p.playBtn.SetIconName("media-playback-stop-symbolic")
 	} else {

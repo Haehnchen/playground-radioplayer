@@ -5,6 +5,22 @@ package main
 #include <stdlib.h>
 #include <gst/gst.h>
 
+typedef struct {
+	gchar *codec;
+	guint bitrate;
+	guint nominal_bitrate;
+	gint rate;
+	gint channels;
+} RadioStreamInfo;
+
+static void radio_stream_info_free(gpointer data) {
+	RadioStreamInfo *info = data;
+	if (info != NULL) {
+		g_free(info->codec);
+		g_free(info);
+	}
+}
+
 static void radio_on_pad_added(GstElement *src, GstPad *pad, gpointer data) {
 	GstElement *convert = GST_ELEMENT(data);
 	GstPad *sink = gst_element_get_static_pad(convert, "sink");
@@ -51,6 +67,7 @@ static GstElement* radio_new_pipeline(const char *uri) {
 		gst_object_unref(pipeline);
 		return NULL;
 	}
+	g_object_set_data_full(G_OBJECT(pipeline), "radio-info", g_new0(RadioStreamInfo, 1), radio_stream_info_free);
 	g_signal_connect(source, "pad-added", G_CALLBACK(radio_on_pad_added), convert);
 	return pipeline;
 }
@@ -82,6 +99,110 @@ static void radio_stop(GstElement *player) {
 static void radio_unref(GstElement *player) {
 	gst_object_unref(player);
 }
+
+static void radio_update_info_from_bus(GstElement *player, RadioStreamInfo *info) {
+	GstBus *bus = gst_element_get_bus(player);
+	GstMessage *message = NULL;
+	while ((message = gst_bus_pop_filtered(bus, GST_MESSAGE_TAG)) != NULL) {
+		GstTagList *tags = NULL;
+		gst_message_parse_tag(message, &tags);
+		if (tags != NULL) {
+			gchar *codec = NULL;
+			guint bitrate = 0;
+			if (gst_tag_list_get_string(tags, GST_TAG_AUDIO_CODEC, &codec)) {
+				g_free(info->codec);
+				info->codec = codec;
+			}
+			if (gst_tag_list_get_uint(tags, GST_TAG_BITRATE, &bitrate)) {
+				info->bitrate = bitrate;
+			}
+			if (gst_tag_list_get_uint(tags, GST_TAG_NOMINAL_BITRATE, &bitrate)) {
+				info->nominal_bitrate = bitrate;
+			}
+			gst_tag_list_unref(tags);
+		}
+		gst_message_unref(message);
+	}
+	gst_object_unref(bus);
+}
+
+static void radio_update_info_from_caps(GstElement *player, RadioStreamInfo *info) {
+	GstElement *convert = gst_bin_get_by_name(GST_BIN(player), "convert");
+	if (convert == NULL) {
+		return;
+	}
+	GstPad *sink = gst_element_get_static_pad(convert, "sink");
+	if (sink == NULL) {
+		gst_object_unref(convert);
+		return;
+	}
+	GstCaps *caps = gst_pad_get_current_caps(sink);
+	if (caps != NULL) {
+		GstStructure *structure = gst_caps_get_structure(caps, 0);
+		gint value = 0;
+		if (gst_structure_get_int(structure, "rate", &value)) {
+			info->rate = value;
+		}
+		if (gst_structure_get_int(structure, "channels", &value)) {
+			info->channels = value;
+		}
+		gst_caps_unref(caps);
+	}
+	gst_object_unref(sink);
+	gst_object_unref(convert);
+}
+
+static char* radio_stream_info(GstElement *player) {
+	RadioStreamInfo *info = g_object_get_data(G_OBJECT(player), "radio-info");
+	if (info == NULL) {
+		return NULL;
+	}
+	radio_update_info_from_bus(player, info);
+	radio_update_info_from_caps(player, info);
+
+	GString *out = g_string_new(NULL);
+	if (info->codec != NULL && info->codec[0] != '\0') {
+		g_string_append(out, info->codec);
+	}
+	guint bitrate = info->bitrate > 0 ? info->bitrate : info->nominal_bitrate;
+	if (bitrate > 0) {
+		if (out->len > 0) {
+			g_string_append(out, ", ");
+		}
+		g_string_append_printf(out, "%u kbps", bitrate / 1000);
+	}
+	if (info->rate > 0) {
+		if (out->len > 0) {
+			g_string_append(out, ", ");
+		}
+		if (info->rate % 1000 == 0) {
+			g_string_append_printf(out, "%d kHz", info->rate / 1000);
+		} else {
+			g_string_append_printf(out, "%.1f kHz", info->rate / 1000.0);
+		}
+	}
+	if (info->channels > 0) {
+		if (out->len > 0) {
+			g_string_append(out, ", ");
+		}
+		if (info->channels == 1) {
+			g_string_append(out, "mono");
+		} else if (info->channels == 2) {
+			g_string_append(out, "stereo");
+		} else {
+			g_string_append_printf(out, "%d ch", info->channels);
+		}
+	}
+	if (out->len == 0) {
+		g_string_free(out, TRUE);
+		return NULL;
+	}
+	return g_string_free(out, FALSE);
+}
+
+static void radio_free_string(char *value) {
+	g_free(value);
+}
 */
 import "C"
 
@@ -96,6 +217,8 @@ import (
 	"strconv"
 	"strings"
 	"unsafe"
+
+	glib "github.com/diamondburned/gotk4/pkg/glib/v2"
 )
 
 func initAudioBackend() bool {
@@ -117,6 +240,7 @@ func (p *Player) playTrack(id int) {
 	}
 
 	if p.gstPlayer != nil {
+		p.stopStreamInfoPolling()
 		player := (*C.GstElement)(p.gstPlayer)
 		C.radio_stop(player)
 		C.radio_unref(player)
@@ -141,16 +265,20 @@ func (p *Player) playTrack(id int) {
 		return
 	}
 	p.statusMsg = ""
+	p.streamInfo = ""
 	p.settings.LastTrackURL = track.URL
 	saveSettings(p.settings)
 	p.refreshUI()
+	p.startStreamInfoPolling()
 }
 
 func (p *Player) stopPlayback() {
+	p.stopStreamInfoPolling()
 	if p.gstPlayer != nil {
 		C.radio_stop((*C.GstElement)(p.gstPlayer))
 	}
 	p.playingIdx = -1
+	p.streamInfo = ""
 	p.settings.LastTrackURL = ""
 	saveSettings(p.settings)
 	p.refreshUI()
@@ -190,12 +318,23 @@ func (p *Player) currentStatus() string {
 		return p.statusMsg
 	}
 	if p.playingIdx >= 0 && p.playingIdx < len(p.playlist) {
-		return "Playing: " + p.playlist[p.playingIdx].Name
+		return p.playlist[p.playingIdx].Name
 	}
 	if len(p.playlist) == 0 {
 		return "No playlist loaded"
 	}
 	return "Stopped"
+}
+
+func (p *Player) currentStatusMarkup() string {
+	if p.statusMsg != "" || p.playingIdx < 0 || p.playingIdx >= len(p.playlist) {
+		return glib.MarkupEscapeText(p.currentStatus())
+	}
+	markup := glib.MarkupEscapeText(p.playlist[p.playingIdx].Name)
+	if p.streamInfo != "" {
+		markup += ` <span size="smaller" foreground="#6f747a">(` + glib.MarkupEscapeText(p.streamInfo) + `)</span>`
+	}
+	return markup
 }
 
 func (p *Player) autoPlayLastTrack() {
@@ -401,6 +540,7 @@ StartupWMClass=%s
 }
 
 func (p *Player) cleanup() {
+	p.stopStreamInfoPolling()
 	if p.gstPlayer != nil {
 		player := (*C.GstElement)(p.gstPlayer)
 		C.radio_stop(player)
@@ -414,4 +554,79 @@ func gboolean(value bool) C.gboolean {
 		return C.gboolean(1)
 	}
 	return C.gboolean(0)
+}
+
+func (p *Player) startStreamInfoPolling() {
+	p.stopStreamInfoPolling()
+	attempts := 0
+	p.infoPoll = glib.TimeoutAdd(500, func() bool {
+		if p.playingIdx < 0 || p.gstPlayer == nil {
+			p.infoPoll = 0
+			return false
+		}
+		attempts++
+		if info := p.readStreamInfo(); info != "" && info != p.streamInfo {
+			p.streamInfo = info
+			p.refreshUI()
+		}
+		if attempts >= 20 && p.streamInfo != "" {
+			p.infoPoll = 0
+			return false
+		}
+		if attempts >= 40 {
+			p.infoPoll = 0
+			return false
+		}
+		return true
+	})
+}
+
+func (p *Player) stopStreamInfoPolling() {
+	if p.infoPoll != 0 {
+		glib.SourceRemove(p.infoPoll)
+		p.infoPoll = 0
+	}
+}
+
+func (p *Player) readStreamInfo() string {
+	if p.gstPlayer == nil {
+		return ""
+	}
+	info := C.radio_stream_info((*C.GstElement)(p.gstPlayer))
+	if info == nil {
+		return ""
+	}
+	defer C.radio_free_string(info)
+	return shortenStreamInfo(C.GoString(info))
+}
+
+func shortenStreamInfo(info string) string {
+	parts := strings.Split(info, ", ")
+	if len(parts) == 0 {
+		return info
+	}
+	parts[0] = shortCodecName(parts[0])
+	return strings.Join(parts, ", ")
+}
+
+func shortCodecName(codec string) string {
+	name := strings.ToLower(codec)
+	switch {
+	case strings.Contains(name, "mpeg-1 layer 3"), strings.Contains(name, "mp3"):
+		return "MP3"
+	case strings.Contains(name, "advanced audio coding"), strings.Contains(name, "aac"):
+		return "AAC"
+	case strings.Contains(name, "opus"):
+		return "Opus"
+	case strings.Contains(name, "vorbis"):
+		return "Vorbis"
+	case strings.Contains(name, "flac"):
+		return "FLAC"
+	case strings.Contains(name, "wavpack"):
+		return "WavPack"
+	case strings.Contains(name, "pcm"):
+		return "PCM"
+	default:
+		return codec
+	}
 }
